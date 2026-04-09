@@ -14,18 +14,52 @@
 #include <math.h>
 #include <time.h>
 
-#define PAGE_SIZE 4096
-
-#define FREQ 3.9
+static unsigned long page_size = 4096;
+static unsigned long hugepage_size = 2*1024*1024;
+static double cpu_freq_ghz = 3.9;
 
 static int test_hugepage = 0;
 static int random_list = 0;
+
+static void detect_system_params(void)
+{
+	long p = sysconf(_SC_PAGESIZE);
+	FILE *f;
+	char line[256]; // flawfinder: ignore
+
+	if (p > 0)
+		page_size = (unsigned long)p;
+
+	f = fopen("/proc/meminfo", "r"); // flawfinder: ignore
+	if (f) {
+		while (fgets(line, sizeof(line), f)) {
+			unsigned long hp;
+			if (sscanf(line, "Hugepagesize: %lu kB", &hp) == 1) {
+				hugepage_size = hp * 1024;
+				break;
+			}
+		}
+		fclose(f);
+	}
+
+	f = fopen("/proc/cpuinfo", "r"); // flawfinder: ignore
+	if (f) {
+		while (fgets(line, sizeof(line), f)) {
+			float mhz;
+			if (sscanf(line, "cpu MHz : %f", &mhz) == 1) {
+				cpu_freq_ghz = (double)mhz / 1000.0;
+				break;
+			}
+		}
+		fclose(f);
+	}
+}
 
 static void die(const char *fmt, ...)
 {
 	va_list argp;
 	va_start(argp, fmt);
-	vfprintf(stderr, fmt, argp);
+	vfprintf(stderr, fmt, argp); // flawfinder: ignore
 	va_end(argp);
 	fputc('\n', stderr);
 	exit(1);
@@ -33,17 +67,18 @@ static void die(const char *fmt, ...)
 
 static volatile int stop = 0;
 
-void alarm_handler(int sig)
+static void alarm_handler(int sig)
 {
+	(void)sig;
 	stop = 1;
 }
 
-unsigned long usec_diff(struct timeval *a, struct timeval *b)
+static unsigned long usec_diff(const struct timeval *a, const struct timeval *b)
 {
 	unsigned long usec;
 
-	usec = (b->tv_sec - a->tv_sec)*1000000;
-	usec += b->tv_usec - a->tv_usec;
+	usec = (unsigned long)(b->tv_sec - a->tv_sec)*1000000;
+	usec += (unsigned long)(b->tv_usec - a->tv_usec);
 	return usec;
 }
 
@@ -61,7 +96,7 @@ static unsigned long warmup(void *map)
 
 	gettimeofday(&start, NULL);
 	do {
-		offset = *(volatile unsigned int *)(map + offset);
+		offset = *(volatile unsigned int *)((char *)map + offset);
 	} while (offset);
 	gettimeofday(&end, NULL);
 	return usec_diff(&start, &end);
@@ -85,8 +120,8 @@ static double do_test(void *map)
 	usec = warmup(map) * 5;
 	if (usec < 200000)
 		usec = 200000;
-	itval.it_value.tv_sec = usec / 1000000;
-	itval.it_value.tv_usec = usec % 1000000;
+	itval.it_value.tv_sec = (long)(usec / 1000000);
+	itval.it_value.tv_usec = (long)(usec % 1000000);
 
 	stop = 0;
 	signal(SIGALRM, alarm_handler);
@@ -95,13 +130,13 @@ static double do_test(void *map)
 	gettimeofday(&start, NULL);
 	do {
 		count++;
-		offset = *(unsigned int *)(map + offset);
+		offset = *(unsigned int *)((char *)map + offset);
 	} while (!stop);
 	gettimeofday(&end, NULL);
 	usec = usec_diff(&start, &end);
 
 	// Make sure the compiler doesn't compile away offset
-	*(volatile unsigned int *)(map + offset);
+	*(volatile unsigned int *)((char *)map + offset);
 
 	// return cycle time in ns
 	return 1000 * (double) usec / count;
@@ -138,7 +173,7 @@ static unsigned long get_num(const char *str)
 static void randomize_map(void *map, unsigned long size, unsigned long stride)
 {
 	unsigned long off;
-	unsigned int *lastpos, *rnd;
+	unsigned int *rnd;
 	int n;
 
 	rnd = calloc(size / stride + 1, sizeof(unsigned int));
@@ -151,25 +186,23 @@ static void randomize_map(void *map, unsigned long size, unsigned long stride)
 
 	/* Randomize the offsets */
 	for (n = 0, off = 0; off < size; n++, off += stride) {
-		unsigned int m = (unsigned long)random() % (size / stride);
+		unsigned int m = (unsigned long)random() % (size / stride); // flawfinder: ignore
 		unsigned int tmp = rnd[n];
 		rnd[n] = rnd[m];
 		rnd[m] = tmp;
 	}
 
 	/* Create a circular list from the random offsets */
-	lastpos = map;
 	for (n = 0, off = 0; off < size; n++, off += stride) {
-		lastpos = map + rnd[n];
-		*lastpos = rnd[n+1];
+		unsigned int *node = (unsigned int *)((char *)map + rnd[n]);
+		if (off + stride < size)
+			*node = rnd[n + 1];
+		else
+			*node = rnd[0];
 	}
-	*lastpos = rnd[0];
 
 	free(rnd);
 }
-
-// Hugepage size
-#define HUGEPAGE (2*1024*1024)
 
 static void *create_map(void *map, unsigned long size, unsigned long stride)
 {
@@ -195,7 +228,7 @@ static void *create_map(void *map, unsigned long size, unsigned long stride)
 
 	mapsize = size;
 	if (test_hugepage)
-		mapsize += 2*HUGEPAGE;
+		mapsize += 2*hugepage_size;
 
 	map = mmap(map, mapsize, PROT_READ | PROT_WRITE, flags, -1, 0);
 	if (map == MAP_FAILED)
@@ -203,12 +236,12 @@ static void *create_map(void *map, unsigned long size, unsigned long stride)
 
 	if (test_hugepage) {
 		unsigned long mapstart = (unsigned long) map;
-		mapstart += HUGEPAGE-1;
-		mapstart &= ~(HUGEPAGE-1);
+		mapstart += hugepage_size-1;
+		mapstart &= ~(hugepage_size-1);
 		map = (void *)mapstart;
 
-		mapsize = size + HUGEPAGE-1;
-		mapsize &= ~(HUGEPAGE-1);
+		mapsize = size + hugepage_size-1;
+		mapsize &= ~(hugepage_size-1);
 
 		madvise(map, mapsize, MADV_HUGEPAGE);
 	} else {
@@ -223,8 +256,8 @@ static void *create_map(void *map, unsigned long size, unsigned long stride)
 
 	lastpos = map;
 	for (off = 0; off < size; off += stride) {
-		lastpos = map + off;
-		*lastpos = off + stride;
+		lastpos = (unsigned int *)((char *)map + off);
+		*lastpos = (unsigned int)(off + stride);
 	}
 	*lastpos = 0;
 
@@ -238,7 +271,9 @@ int main(int argc, char **argv)
 	void *map;
 	double cycles;
 
-	srandom(time(NULL));
+	srandom((unsigned int)time(NULL)); // flawfinder: ignore
+
+	detect_system_params();
 
 	while ((arg = argv[1]) != NULL) {
 		if (*arg != '-')
@@ -253,6 +288,10 @@ int main(int argc, char **argv)
 			case 'r':
 				random_list = 1;
 				continue;
+			case 'f':
+				cpu_freq_ghz = atof(argv[2]);
+				argv++;
+				continue;
 			default:
 				die("Unknown flag '%s'", arg);
 			}
@@ -264,7 +303,7 @@ int main(int argc, char **argv)
 	size = get_num(argv[1]);
 	stride = get_num(argv[2]);
 	if (stride < 4 || size < stride)
-		die("bad arguments: test-tlb [-H] <size> <stride>");
+		die("bad arguments: test-tlb [-H] [-r] [-f freq] <size> <stride>");
 
 	map = NULL;
 	cycles = 1e10;
@@ -281,6 +320,6 @@ int main(int argc, char **argv)
 	}
 
 	printf("%6.2fns (~%.1f cycles)\n",
-		cycles, cycles*FREQ);
+		cycles, cycles*cpu_freq_ghz);
 	return 0;
 }

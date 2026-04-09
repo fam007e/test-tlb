@@ -1,26 +1,18 @@
 Quick memory latency and TLB test program.
 
-NOTE! This is a quick hack, and the code itself has some hardcoded
-constants in it that you should look at and possibly change to match
-your machine. 
+NOTE! This was originally a quick hack with hardcoded constants, but it
+now automatically detects your system's page size, hugepage size, and
+CPU frequency at runtime.
 
-      #define PAGE_SIZE 4096
+The detected CPU frequency (parsed from /proc/cpuinfo) is used for cycle
+estimation. If the detection is off (e.g. due to power saving), you can
+manually override it using the "-f" flag:
 
-      #define FREQ 3.9
+      ./test-tlb -f 3.9 128M 64
 
-.. and then later down..
-
-      // Hugepage size
-      #define HUGEPAGE (2*1024*1024)
-
-if you don't change the FREQ define (it's in gigahertz) the tests still
-work, and the absolute time values in nanoseconds are correct, but the
-CPU cycle estimation will obviously be completely off.
-
-In addition to the tweakables in the code itself, there are other
-hardcoded values in the Makefile, where the "make run" script will be
-testing memory sizes ranging from 4kB to 256MB, and it uses a hardcoded
-stride of 64 bytes.
+In addition to the automation in the code itself, the "make run" script
+has been updated to test memory sizes ranging from 4kB to 1GB using a 
+64-byte stride.
 
 To give meaningful numbers, the stride should generally be at least the
 size of your cacheline, although particularly in cases with multiple
