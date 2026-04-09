@@ -22,7 +22,7 @@ Known intentional patterns (not vulnerabilities):
 If you discover a genuine security issue (e.g., a memory safety bug that could be exploited when run as root or in a privileged context):
 
 1. **Do not open a public GitHub issue.**
-2. Report it privately by emailing the maintainer or via [GitHub private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing/privately-reporting-a-security-vulnerability) if enabled.
+2. Report it privately by [emailing](mailto:faisalmoshiur+testtlb@gmail.com) the maintainer or via [GitHub private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing/privately-reporting-a-security-vulnerability) if enabled.
 3. Include:
    - A description of the vulnerability
    - Steps to reproduce
